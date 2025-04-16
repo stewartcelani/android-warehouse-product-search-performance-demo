@@ -1,0 +1,1058 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+data/AppDatabase.kt
+data/Product.kt
+data/ProductDao.kt
+di/AppModule.kt
+MainActivity.kt
+ui/components/DatabaseSeedingProgress.kt
+ui/components/ProductItem.kt
+ui/components/ProductList.kt
+ui/components/SearchBar.kt
+ui/theme/Color.kt
+ui/theme/Theme.kt
+ui/theme/Type.kt
+ui/WarehouseSearchScreen.kt
+util/DatabaseSeeder.kt
+util/PerformanceUtils.kt
+viewmodel/MainViewModel.kt
+WarehouseApplication.kt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="data/AppDatabase.kt">
+package com.example.warehouseproductsearchperformancedemo.data
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
+
+@Database(entities = [Product::class], version = 1)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun productDao(): ProductDao
+    
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+        
+        fun getDatabase(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "warehouse_database"
+                )
+                .addCallback(object : RoomDatabase.Callback() {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        super.onCreate(db)
+                        // Create additional indices for performance
+                        db.execSQL("CREATE INDEX IF NOT EXISTS idx_product_code ON products(code)")
+                        db.execSQL("CREATE INDEX IF NOT EXISTS idx_product_title ON products(title)")
+                        db.execSQL("CREATE INDEX IF NOT EXISTS idx_product_barcode ON products(barcode)")
+                        
+                        // For the barcode scan use case, create a specialized index
+                        db.execSQL("CREATE INDEX IF NOT EXISTS idx_product_barcode_exact ON products(barcode)")
+                    }
+                })
+                .build()
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
+}
+</file>
+
+<file path="data/Product.kt">
+package com.example.warehouseproductsearchperformancedemo.data
+
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+@Entity(
+    tableName = "products",
+    indices = [
+        Index(value = ["code"]),
+        Index(value = ["title"]),
+        Index(value = ["barcode"])
+    ]
+)
+data class Product(
+    @PrimaryKey val id: Long,
+    val code: String,
+    val title: String,
+    val barcode: String,
+    val supplier: String,
+    val stock: Double,
+    val isActive: Boolean
+)
+</file>
+
+<file path="data/ProductDao.kt">
+package com.example.warehouseproductsearchperformancedemo.data
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.Query
+import androidx.room.Transaction
+
+@Dao
+interface ProductDao {
+    @Query("SELECT * FROM products WHERE code LIKE :searchQuery OR title LIKE :searchQuery OR barcode LIKE :searchQuery LIMIT 100")
+    suspend fun searchProductsRaw(searchQuery: String): List<Product>
+    
+    @Transaction
+    suspend fun searchProducts(searchQuery: String): List<Product> {
+        return searchProductsRaw(searchQuery)
+    }
+    
+    // For performance testing with different query types
+    @Query("SELECT * FROM products WHERE code LIKE :searchQuery LIMIT 100")
+    suspend fun searchByCodeOnly(searchQuery: String): List<Product>
+    
+    @Query("SELECT * FROM products WHERE title LIKE :searchQuery LIMIT 100")
+    suspend fun searchByTitleOnly(searchQuery: String): List<Product>
+    
+    @Query("SELECT * FROM products WHERE barcode LIKE :searchQuery LIMIT 100")
+    suspend fun searchByBarcodeOnly(searchQuery: String): List<Product>
+    
+    // Specialized search for exact barcode match (for scanning use case)
+    @Query("SELECT * FROM products WHERE barcode = :exactBarcode LIMIT 1")
+    suspend fun findProductByExactBarcode(exactBarcode: String): Product?
+    
+    @Insert
+    suspend fun insertAll(products: List<Product>)
+    
+    @Query("SELECT COUNT(*) FROM products")
+    suspend fun getCount(): Int
+}
+</file>
+
+<file path="di/AppModule.kt">
+package com.example.warehouseproductsearchperformancedemo.di
+
+import android.content.Context
+import com.example.warehouseproductsearchperformancedemo.data.AppDatabase
+import com.example.warehouseproductsearchperformancedemo.data.ProductDao
+import com.example.warehouseproductsearchperformancedemo.util.DatabaseSeeder
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import javax.inject.Singleton
+
+@Module
+@InstallIn(SingletonComponent::class)
+object AppModule {
+    
+    @Provides
+    @Singleton
+    fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
+        return AppDatabase.getDatabase(context)
+    }
+    
+    @Provides
+    @Singleton
+    fun provideProductDao(database: AppDatabase): ProductDao {
+        return database.productDao()
+    }
+    
+    @Provides
+    @Singleton
+    fun provideDatabaseSeeder(database: AppDatabase): DatabaseSeeder {
+        return DatabaseSeeder(database)
+    }
+}
+</file>
+
+<file path="MainActivity.kt">
+package com.example.warehouseproductsearchperformancedemo
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import com.example.warehouseproductsearchperformancedemo.ui.WarehouseSearchScreen
+import com.example.warehouseproductsearchperformancedemo.ui.theme.WarehouseProductSearchPerformanceDemoTheme
+import dagger.hilt.android.AndroidEntryPoint
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            WarehouseProductSearchPerformanceDemoTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    WarehouseSearchScreen()
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="ui/components/DatabaseSeedingProgress.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.components
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun DatabaseSeedingProgress(
+    progress: Int,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Initializing database with 100,000 products...",
+            style = MaterialTheme.typography.headlineSmall
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        LinearProgressIndicator(
+            progress = progress / 100f,
+            modifier = Modifier
+                .fillMaxWidth(0.8f)
+                .height(8.dp)
+        )
+        
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Text(
+            text = "$progress%",
+            style = MaterialTheme.typography.bodyLarge
+        )
+    }
+}
+</file>
+
+<file path="ui/components/ProductItem.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.warehouseproductsearchperformancedemo.data.Product
+
+@Composable
+fun ProductItem(product: Product, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = product.code,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Text(
+                text = product.title,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            
+            Spacer(modifier = Modifier.height(4.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Barcode: ${product.barcode}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+            
+            Text(
+                text = "Supplier: ${product.supplier}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Stock: ${product.stock}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                
+                Spacer(modifier = Modifier.weight(1f))
+                
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = if (product.isActive) Color.Green else Color.Red,
+                                shape = CircleShape
+                            )
+                    )
+                    
+                    Spacer(modifier = Modifier.width(4.dp))
+                    
+                    Text(
+                        text = if (product.isActive) "Active" else "Inactive",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="ui/components/ProductList.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.components
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.example.warehouseproductsearchperformancedemo.data.Product
+
+@Composable
+fun ProductList(
+    products: List<Product>,
+    isLoading: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (products.isEmpty() && !isLoading) {
+        Box(
+            modifier = modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No products found",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        }
+    } else {
+        LazyColumn(
+            modifier = modifier,
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(
+                items = products,
+                key = { it.id }
+            ) { product ->
+                ProductItem(
+                    product = product,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+        }
+    }
+}
+</file>
+
+<file path="ui/components/SearchBar.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.components
+
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    isLoading: Boolean,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier.fillMaxWidth(),
+        placeholder = { Text("Search by code, title or barcode...") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(Icons.Default.Clear, contentDescription = "Clear")
+                }
+            } else if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            }
+        },
+        singleLine = true
+    )
+}
+</file>
+
+<file path="ui/theme/Color.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val Purple80 = Color(0xFFD0BCFF)
+val PurpleGrey80 = Color(0xFFCCC2DC)
+val Pink80 = Color(0xFFEFB8C8)
+
+val Purple40 = Color(0xFF6650a4)
+val PurpleGrey40 = Color(0xFF625b71)
+val Pink40 = Color(0xFF7D5260)
+</file>
+
+<file path="ui/theme/Theme.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.theme
+
+import android.app.Activity
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+
+private val DarkColorScheme = darkColorScheme(
+    primary = Purple80,
+    secondary = PurpleGrey80,
+    tertiary = Pink80
+)
+
+private val LightColorScheme = lightColorScheme(
+    primary = Purple40,
+    secondary = PurpleGrey40,
+    tertiary = Pink40
+
+    /* Other default colors to override
+    background = Color(0xFFFFFBFE),
+    surface = Color(0xFFFFFBFE),
+    onPrimary = Color.White,
+    onSecondary = Color.White,
+    onTertiary = Color.White,
+    onBackground = Color(0xFF1C1B1F),
+    onSurface = Color(0xFF1C1B1F),
+    */
+)
+
+@Composable
+fun WarehouseProductSearchPerformanceDemoTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    // Dynamic color is available on Android 12+
+    dynamicColor: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val context = LocalContext.current
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = Typography,
+        content = content
+    )
+}
+</file>
+
+<file path="ui/theme/Type.kt">
+package com.example.warehouseproductsearchperformancedemo.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+// Set of Material typography styles to start with
+val Typography = Typography(
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.5.sp
+    )
+    /* Other default text styles to override
+    titleLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = 0.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.5.sp
+    )
+    */
+)
+</file>
+
+<file path="ui/WarehouseSearchScreen.kt">
+package com.example.warehouseproductsearchperformancedemo.ui
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.warehouseproductsearchperformancedemo.ui.components.DatabaseSeedingProgress
+import com.example.warehouseproductsearchperformancedemo.ui.components.ProductList
+import com.example.warehouseproductsearchperformancedemo.ui.components.SearchBar
+import com.example.warehouseproductsearchperformancedemo.viewmodel.MainViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WarehouseSearchScreen(
+    viewModel: MainViewModel = hiltViewModel(),
+    modifier: Modifier = Modifier
+) {
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val seedingProgress by viewModel.seedingProgress.collectAsState()
+    val isDatabaseSeeded by viewModel.isDatabaseSeeded.collectAsState()
+    val lastSearchTime by viewModel.lastSearchTime.collectAsState()
+    
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Warehouse Product Search") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            )
+        },
+        modifier = modifier
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            if (!isDatabaseSeeded) {
+                DatabaseSeedingProgress(progress = seedingProgress)
+            } else {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    SearchBar(
+                        query = searchQuery,
+                        onQueryChange = { viewModel.updateSearchQuery(it) },
+                        isLoading = isLoading
+                    )
+                    
+                    if (lastSearchTime > 0 && searchResults.isNotEmpty()) {
+                        Text(
+                            text = "Found ${searchResults.size} results in ${lastSearchTime}ms",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    ProductList(
+                        products = searchResults,
+                        isLoading = isLoading,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="util/DatabaseSeeder.kt">
+package com.example.warehouseproductsearchperformancedemo.util
+
+import com.example.warehouseproductsearchperformancedemo.data.AppDatabase
+import com.example.warehouseproductsearchperformancedemo.data.Product
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import javax.inject.Inject
+import kotlin.math.roundToInt
+import kotlin.random.Random
+
+class DatabaseSeeder @Inject constructor(private val database: AppDatabase) {
+
+    // Supplier names for generating random supplier data
+    private val suppliers = listOf(
+        "Global Supply Co.", 
+        "TechParts Inc.", 
+        "FarmFresh Distributors",
+        "ElectroParts Ltd.",
+        "Acme Industries",
+        "MegaStore Supplies",
+        "Quality Hardware Corp",
+        "Eastern Manufacturing",
+        "Western Distributors",
+        "Northern Goods Ltd.",
+        "Southern Products Inc.",
+        "Continental Exports",
+        "Precision Parts Co.",
+        "Bulk Warehouse Supplies",
+        "Reliable Goods Inc.",
+        "Prime Distribution Center",
+        "EcoFriendly Materials",
+        "Industrial Solutions Group",
+        "Commercial Supply Chain",
+        "Wholesale Distributors Inc."
+    )
+    
+    // Product categories for more realistic titles
+    private val categories = mapOf(
+        "ELEC" to listOf(
+            "LED Light", "Power Adapter", "HDMI Cable", "Circuit Board", "Capacitor",
+            "Resistor", "Battery Pack", "Solar Panel", "Voltage Regulator", "Transistor"
+        ),
+        "TOOL" to listOf(
+            "Hammer", "Wrench Set", "Power Drill", "Measuring Tape", "Screwdriver",
+            "Circular Saw", "Pliers", "Level Tool", "Socket Set", "Utility Knife"
+        ),
+        "FOOD" to listOf(
+            "Organic Flour", "Canned Beans", "Rice", "Pasta", "Cooking Oil",
+            "Spice Mix", "Dried Fruit", "Baking Powder", "Sugar", "Salt"
+        ),
+        "AUTO" to listOf(
+            "Oil Filter", "Brake Pad", "Spark Plug", "Wiper Blade", "Air Filter",
+            "Timing Belt", "Radiator Cap", "Transmission Fluid", "Battery Terminal", "Headlight Bulb"
+        ),
+        "CHEM" to listOf(
+            "Industrial Cleaner", "Adhesive", "Paint", "Solvent", "Lubricant",
+            "Epoxy Resin", "Rust Converter", "Degreaser", "PVC Cement", "Silicone Sealant"
+        ),
+        "FURN" to listOf(
+            "Office Chair", "Desk", "Bookshelf", "Cabinet", "Table",
+            "Filing Cabinet", "Ergonomic Keyboard Tray", "Monitor Stand", "Lamp", "Drawer Unit"
+        ),
+        "TEXT" to listOf(
+            "Cotton Fabric", "Polyester Blend", "Upholstery Material", "Canvas", "Denim",
+            "Microfiber Cloth", "Nylon Webbing", "Elastic Band", "Velcro Strip", "Thread Spool"
+        ),
+        "PACK" to listOf(
+            "Cardboard Box", "Bubble Wrap", "Packing Tape", "Plastic Container", "Shipping Label",
+            "Foam Insert", "Padded Envelope", "Shrink Wrap", "Pallet Wrap", "Void Fill"
+        )
+    )
+    
+    private val adjectives = listOf(
+        "Premium", "Standard", "Industrial", "Commercial", "Professional", 
+        "Basic", "Advanced", "Essential", "Heavy-Duty", "Lightweight",
+        "Organic", "Synthetic", "Reinforced", "Insulated", "Waterproof"
+    )
+    
+    private val specifications = listOf(
+        "Large", "Small", "Medium", "Compact", "Portable",
+        "High-Capacity", "Long-Lasting", "Quick-Release", "Adjustable", "Universal",
+        "Foldable", "Stackable", "Expandable", "Modular", "Customizable"
+    )
+    
+    private val measurements = listOf(
+        "10mm", "50cm", "1L", "5kg", "2m", 
+        "100g", "250ml", "12in", "30cm", "6oz",
+        "15cm", "500g", "750ml", "25mm", "8ft"
+    )
+    
+    // Generate product code based on category and ID
+    private fun generateCode(category: String, id: Long): String {
+        val sequence = id.toString().padStart(5, '0')
+        return "$category-$sequence"
+    }
+    
+    // Generate realistic product title
+    private fun generateTitle(category: String, id: Long): String {
+        val baseItems = categories[category] ?: categories.values.random()
+        val baseItem = baseItems.random()
+        
+        // Randomly select title format
+        return when ((id % 4).toInt()) {
+            0 -> "${adjectives.random()} $baseItem ${measurements.random()}"
+            1 -> "$baseItem, ${specifications.random()}, ${measurements.random()}"
+            2 -> "${specifications.random()} ${adjectives.random()} $baseItem"
+            else -> "$baseItem ${measurements.random()} ${adjectives.random()} Grade"
+        }
+    }
+    
+    // Generate valid-format barcode
+    private fun generateBarcode(): String {
+        val prefix = (100..999).random() // GS1 prefix (simplified)
+        val middle = (1000000..9999999).random() // 7 digits
+        
+        // Simple check digit calculation (simplified version)
+        val digits = "$prefix$middle"
+        var sum = 0
+        digits.forEachIndexed { index, c ->
+            val digit = c.toString().toInt()
+            // Alternate multiplier: 3 for even positions, 1 for odd
+            val multiplier = if (index % 2 == 0) 3 else 1
+            sum += digit * multiplier
+        }
+        val checkDigit = (10 - (sum % 10)) % 10
+        
+        // UPC-A (12 digits) with check digit
+        return "$prefix$middle$checkDigit"
+    }
+    
+    // Generate stock values with distribution
+    private fun generateStock(): Double {
+        return when (Random.nextInt(10)) {
+            in 0..2 -> Random.nextDouble(0.0, 10.0) // 30% low stock
+            in 3..7 -> Random.nextDouble(10.0, 1000.0) // 50% medium stock
+            else -> Random.nextDouble(1000.0, 10000.0) // 20% high stock
+        }.roundToTwoDecimals()
+    }
+    
+    // Helper to round double to 2 decimal places
+    private fun Double.roundToTwoDecimals(): Double {
+        return (this * 100).roundToInt() / 100.0
+    }
+    
+    // Main function to seed the database
+    suspend fun seedDatabase(onProgress: (Int) -> Unit) = withContext(Dispatchers.IO) {
+        val currentCount = database.productDao().getCount()
+        if (currentCount > 0) {
+            onProgress(100)
+            return@withContext // Database already seeded
+        }
+        
+        val batchSize = 1000 // Insert 1000 products at a time for better performance
+        val totalProducts = 100000
+        
+        for (i in 0 until totalProducts step batchSize) {
+            val products = (i until minOf(i + batchSize, totalProducts)).map { id ->
+                val categoryKey = categories.keys.toList().random()
+                
+                Product(
+                    id = id.toLong(),
+                    code = generateCode(categoryKey, id.toLong()),
+                    title = generateTitle(categoryKey, id.toLong()),
+                    barcode = generateBarcode(),
+                    supplier = suppliers.random(),
+                    stock = generateStock(),
+                    isActive = Random.nextInt(100) < 75 // 75% active
+                )
+            }
+            
+            database.productDao().insertAll(products)
+            val progress = ((i + batchSize) * 100) / totalProducts
+            onProgress(minOf(progress, 100))
+        }
+        
+        onProgress(100)
+    }
+}
+</file>
+
+<file path="util/PerformanceUtils.kt">
+package com.example.warehouseproductsearchperformancedemo.util
+
+import android.util.Log
+import kotlin.system.measureTimeMillis
+
+/**
+ * Utility class to help with performance measurements
+ */
+object PerformanceUtils {
+    private const val TAG = "PerformanceMetrics"
+    
+    /**
+     * Measures and logs the execution time of a suspending function
+     * 
+     * @param operationName Name of the operation being measured
+     * @param operation The suspending function to measure
+     * @return The result of the operation
+     */
+    suspend fun <T> measureAndLogTime(operationName: String, operation: suspend () -> T): T {
+        var result: T
+        val time = measureTimeMillis {
+            result = operation()
+        }
+        
+        Log.d(TAG, "$operationName completed in $time ms")
+        return result
+    }
+    
+    /**
+     * Logs the memory usage of the application
+     */
+    fun logMemoryUsage() {
+        val runtime = Runtime.getRuntime()
+        val usedMemoryMB = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+        val totalMemoryMB = runtime.totalMemory() / (1024 * 1024)
+        val freeMemoryMB = runtime.freeMemory() / (1024 * 1024)
+        
+        Log.d(TAG, "Memory Usage: $usedMemoryMB MB (used) / $totalMemoryMB MB (total) / $freeMemoryMB MB (free)")
+    }
+}
+</file>
+
+<file path="viewmodel/MainViewModel.kt">
+package com.example.warehouseproductsearchperformancedemo.viewmodel
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.warehouseproductsearchperformancedemo.data.Product
+import com.example.warehouseproductsearchperformancedemo.data.ProductDao
+import com.example.warehouseproductsearchperformancedemo.util.DatabaseSeeder
+import com.example.warehouseproductsearchperformancedemo.util.PerformanceUtils
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import kotlin.system.measureTimeMillis
+
+@HiltViewModel
+class MainViewModel @Inject constructor(
+    private val productDao: ProductDao,
+    private val databaseSeeder: DatabaseSeeder
+) : ViewModel() {
+
+    private val TAG = "PerformanceMetrics"
+    
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading
+    
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery
+    
+    private val _searchResults = MutableStateFlow<List<Product>>(emptyList())
+    val searchResults: StateFlow<List<Product>> = _searchResults
+    
+    private val _seedingProgress = MutableStateFlow(0)
+    val seedingProgress: StateFlow<Int> = _seedingProgress
+    
+    private val _isDatabaseSeeded = MutableStateFlow(false)
+    val isDatabaseSeeded: StateFlow<Boolean> = _isDatabaseSeeded
+    
+    // Performance metrics
+    private val _lastSearchTime = MutableStateFlow(0L)
+    val lastSearchTime: StateFlow<Long> = _lastSearchTime
+    
+    private var searchJob: Job? = null
+    
+    init {
+        // Start seeding the database when ViewModel is created
+        viewModelScope.launch {
+            val seedTime = measureTimeMillis {
+                seedDatabase()
+            }
+            Log.d(TAG, "Database seeding completed in $seedTime ms")
+        }
+        
+        // Set up debounced search
+        viewModelScope.launch {
+            searchQuery
+                .debounce(1000) // 1 second debounce
+                .collectLatest { query ->
+                    if (query.isNotEmpty()) {
+                        performSearch(query)
+                    } else {
+                        _searchResults.value = emptyList()
+                    }
+                }
+        }
+    }
+    
+    private suspend fun seedDatabase() {
+        _isLoading.value = true
+        databaseSeeder.seedDatabase { progress ->
+            _seedingProgress.value = progress
+            if (progress == 100) {
+                _isDatabaseSeeded.value = true
+                _isLoading.value = false
+                PerformanceUtils.logMemoryUsage()
+            }
+        }
+    }
+    
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+    
+    private suspend fun performSearch(query: String) {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                val searchQuery = "%$query%"
+                var results: List<Product>
+                
+                val searchTime = measureTimeMillis {
+                    results = productDao.searchProducts(searchQuery)
+                }
+                
+                _lastSearchTime.value = searchTime
+                _searchResults.value = results
+                
+                Log.d(TAG, "Search for '$query' completed in $searchTime ms, found ${results.size} results")
+                PerformanceUtils.logMemoryUsage()
+                
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+    
+    // For benchmarking specific search scenarios
+    fun performBarcodeSearchTest(exactBarcode: String) {
+        viewModelScope.launch {
+            val searchTime = measureTimeMillis {
+                val result = productDao.findProductByExactBarcode(exactBarcode)
+                Log.d(TAG, "Exact barcode search result: $result")
+            }
+            Log.d(TAG, "Exact barcode search completed in $searchTime ms")
+        }
+    }
+}
+</file>
+
+<file path="WarehouseApplication.kt">
+package com.example.warehouseproductsearchperformancedemo
+
+import android.app.Application
+import dagger.hilt.android.HiltAndroidApp
+
+@HiltAndroidApp
+class WarehouseApplication : Application()
+</file>
+
+</files>
